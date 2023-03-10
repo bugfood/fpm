@@ -105,12 +105,13 @@ class FPM::Package::Python < FPM::Package
       setup_py = path_to_package
     end
 
-    if !File.exist?(setup_py)
+    if File.exist?(setup_py)
+      load_package_metadata_from_setup(setup_py)
+    else
       logger.error("Could not find 'setup.py'", :path => setup_py)
       raise "Unable to find python package; tried #{setup_py}"
     end
 
-    load_package_info(setup_py)
     install_to_staging(setup_py)
   end # def input
 
@@ -197,8 +198,8 @@ class FPM::Package::Python < FPM::Package
     return dirs.first
   end # def download
 
-  # Load the package information like name, version, dependencies.
-  def load_package_info(setup_py)
+  # Load package metadata from setup.py.
+  def load_package_metadata_from_setup(setup_py)
     if !attributes[:python_package_prefix].nil?
       attributes[:python_package_name_prefix] = attributes[:python_package_prefix]
     end
@@ -258,8 +259,15 @@ class FPM::Package::Python < FPM::Package
       File.read(tmp)
     end
     logger.debug("result from `setup.py get_metadata`", :data => output)
+
     metadata = JSON.parse(output)
-    logger.info("object output of get_metadata", :json => metadata)
+    load_package_info_from_metadata(metadata)
+  end # load_package_metadata_from_setup
+
+  # Given metadata, load the package information like name, version,
+  # dependencies.
+  def load_package_info_from_metadata(metadata)
+    logger.info("loading from metadata", :json => metadata)
 
     self.architecture = metadata["architecture"]
     self.description = metadata["description"]
@@ -311,7 +319,7 @@ class FPM::Package::Python < FPM::Package
         self.dependencies << "#{name} #{cmp} #{version}"
       end
     end # if attributes[:python_dependencies?]
-  end # def load_package_info
+  end # def load_package_info_from_metadata
 
   # Sanitize package name.
   # Some PyPI packages can be named 'python-foo', so we don't want to end up
