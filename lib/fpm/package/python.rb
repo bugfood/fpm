@@ -6,6 +6,7 @@ require "rubygems"
 require "fileutils"
 require "tmpdir"
 require "json"
+require "tomlrb"
 
 # Support for python packages.
 #
@@ -94,22 +95,34 @@ class FPM::Package::Python < FPM::Package
   # The 'package' can be any of:
   #
   # * A name of a package on pypi (ie; easy_install some-package)
-  # * The path to a directory containing setup.py
+  # * The path to a directory of a python module source
   # * The path to a setup.py
   def input(package)
     path_to_package = download_if_necessary(package, version)
 
     if File.directory?(path_to_package)
+      pyproject_toml = File.join(path_to_package, "pyproject.toml")
       setup_py = File.join(path_to_package, "setup.py")
     else
+      pyproject_toml = File.join(File.dirname(path_to_package), "pyproject.toml")
       setup_py = path_to_package
     end
 
+    # Python modules are switching over to use pyproject.toml, with setup.py
+    # being deprecated.
+    # https://peps.python.org/pep-0518/
+    # Prefer the older method if available, for now.
     if File.exist?(setup_py)
       load_package_metadata_from_setup(setup_py)
+    elsif File.exist?(pyproject_toml)
+      load_package_metadata_from_toml(pyproject_toml)
     else
-      logger.error("Could not find 'setup.py'", :path => setup_py)
-      raise "Unable to find python package; tried #{setup_py}"
+      logger.error(
+        "Could not find 'setup.py' or 'pyproject.toml'",
+        :py_path => setup_py,
+        :toml_path => pyproject_toml,
+      )
+      raise "Unable to find python package"
     end
 
     install_to_staging(setup_py)
@@ -263,6 +276,76 @@ class FPM::Package::Python < FPM::Package
     metadata = JSON.parse(output)
     load_package_info_from_metadata(metadata)
   end # load_package_metadata_from_setup
+
+  # Load package metadata from pyproject.toml
+  def load_package_metadata_from_toml(pyproject_toml)
+    # https://peps.python.org/pep-0621/
+    toml_data = Tomlrb.load_file(pyproject_toml)
+    logger.debug("data loaded from toml", :data => toml_data)
+    if not toml_data.key?('project')
+      # PEP 621 standardizes the format, but existing files may not use the
+      # standard format (because higher-level tools are supposed to generate
+      # the standard format?). We don't yet have a good way to handle this.
+      raise("unhandled metadata format in: #{pyproject_toml}")
+    end
+
+    project = toml_data['project'] # 'project' is required
+
+    # Initialize a hash of metadata for our own use.
+    metadata = {
+      "dependencies" => [],
+      "name" => project['name'], # required field
+    }
+
+    # Copy optional fields.
+    ['dependencies', 'description', 'version'].each do |key|
+      if project.key?(key)
+        metadata[key] = project[key]
+      end
+    end
+
+    # Read the license, if possible.
+    if project.key?('license')
+      license = project['license']
+      if license.key?('text')
+        metadata['license'] = license['text']
+      elsif license.key?('file')
+        license_file = File.join(File.dirname(pyproject_toml), license['file'])
+        metadata['license'] = File.read(license_file)
+      end
+    end
+
+    # Find an author; for the author to list here, choose the first author
+    # listed, or else the first maintainer.
+    author_hash = nil
+    if project.key?('authors')
+        author_hash = project['authors'][0]
+    elsif project.key?('maintainers')
+        author_hash = project['maintainers'][0]
+    end
+
+    if not author_hash.nil?
+      if author_hash.key?('name')
+        metadata['author'] = author_hash['name']
+        if author_hash.key?('email')
+          metadata['author'] += " <#{author_hash['email']}>"
+        end
+      else
+        metadata['author'] = author_hash['email']
+      end
+    end
+
+    # Find a URL; choose the first URL listed.
+    if project.key?('urls')
+      metadata['url'] = project['urls'].values[0]
+    end
+
+    # FIXME see lib/fpm/package/pyfpm/get_metadata.py
+    # Is there a better way than assuming this?
+    metadata["architecture"] = "all"
+
+    load_package_info_from_metadata(metadata)
+  end # load_package_metadata_from_toml
 
   # Given metadata, load the package information like name, version,
   # dependencies.

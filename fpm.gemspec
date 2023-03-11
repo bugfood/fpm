@@ -42,6 +42,9 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency("stud")
 
+  # For reading python 'pyproject.toml' file.
+  spec.add_dependency("tomlrb") # license: MIT
+
   # In Ruby 3.0, rexml was moved to a bundled gem instead of a default one,
   # so I think this needs to be added explicitly?
   spec.add_dependency("rexml")
